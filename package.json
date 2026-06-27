@@ -1,0 +1,17 @@
+{
+  "name": "cms-myprofile-root",
+  "version": "1.0.0",
+  "description": "Root package.json for cloud deployments of CMS MyProfile",
+  "main": "backend/index.js",
+  "scripts": {
+    "start": "node backend/index.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "mysql2": "^3.22.4",
+    "web-push": "^3.6.7",
+    "sqlite3": "^5.1.7"
+  }
+}

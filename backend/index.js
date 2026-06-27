@@ -23,126 +23,186 @@ const connectionConfig = {
 
 let db;
 
-function handleDisconnect() {
-    db = mysql.createConnection(connectionConfig);
+const useSQLite = !process.env.DB_HOST && !process.env.MYSQLHOST;
 
-    db.connect((err) => {
-        if (err) {
-            console.error('Koneksi MySQL gagal: ' + err.stack);
-            setTimeout(handleDisconnect, 2000); // Coba lagi dalam 2 detik
-            return;
-        }
-        console.log('Koneksi ke server MySQL berhasil!');
+if (useSQLite) {
+    console.log('MySQL host tidak terkonfigurasi. Menggunakan database SQLite...');
+    const sqlite3 = require('sqlite3').verbose();
+    const fs = require('fs');
+    const path = require('path');
+    
+    const dataDir = path.resolve(__dirname, './data');
+    if (!fs.existsSync(dataDir)) {
+        fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const sqliteDb = new sqlite3.Database(path.join(dataDir, 'database.sqlite'));
 
-        const setupTables = () => {
-            // Buat tabel artikel jika belum ada
-            const createTableSql = `
-                CREATE TABLE IF NOT EXISTS artikel (
-                    id INT AUTO_INCREMENT PRIMARY KEY,
-                    judul VARCHAR(255) NOT NULL,
-                    konten TEXT NOT NULL,
-                    gambar LONGTEXT DEFAULT NULL,
-                    lat VARCHAR(50) DEFAULT NULL,
-                    lon VARCHAR(50) DEFAULT NULL,
-                    tanggal TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-            `;
+    db = {
+        query: (sql, params, callback) => {
+            if (typeof params === 'function') {
+                callback = params;
+                params = [];
+            }
 
-            db.query(createTableSql, (err) => {
-                if (err) {
-                    console.error("Gagal membuat tabel:", err);
-                    return;
+            // Bersihkan SQL dari sintaks spesifik MySQL agar cocok dengan SQLite
+            let cleanSql = sql.replace(/ENGINE=InnoDB DEFAULT CHARSET=utf8mb4/gi, '')
+                              .replace(/TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP/gi, 'DATETIME DEFAULT CURRENT_TIMESTAMP')
+                              .replace(/INT AUTO_INCREMENT PRIMARY KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
+                              .replace(/LONGTEXT/gi, 'TEXT')
+                              .replace(/VARCHAR\(\d+\)/gi, 'TEXT');
+
+            const isSelect = cleanSql.trim().toLowerCase().startsWith('select') || 
+                             cleanSql.trim().toLowerCase().startsWith('show') || 
+                             cleanSql.trim().toLowerCase().startsWith('desc') ||
+                             cleanSql.trim().toLowerCase().startsWith('explain');
+
+            if (isSelect) {
+                sqliteDb.all(cleanSql, params, (err, rows) => {
+                    if (err) callback(err);
+                    else callback(null, rows);
+                });
+            } else {
+                sqliteDb.run(cleanSql, params, function(err) {
+                    if (err) callback(err);
+                    else {
+                        callback(null, {
+                            affectedRows: this.changes,
+                            insertId: this.lastID,
+                            changes: this.changes
+                        });
+                    }
+                });
+            }
+        },
+        on: (event, handler) => {}
+    };
+
+    // Setup SQLite Tables
+    const setupSQLite = () => {
+        const createTableSql = `
+            CREATE TABLE IF NOT EXISTS artikel (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                judul TEXT NOT NULL,
+                konten TEXT NOT NULL,
+                gambar TEXT DEFAULT NULL,
+                lat TEXT DEFAULT NULL,
+                lon TEXT DEFAULT NULL,
+                tanggal DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+        `;
+        db.query(createTableSql, [], (err) => {
+            if (err) {
+                console.error("Gagal membuat tabel SQLite:", err);
+                return;
+            }
+            console.log("Tabel SQLite 'artikel' terverifikasi.");
+
+            // Dummy data check
+            db.query("SELECT COUNT(*) AS count FROM artikel", [], (err, results) => {
+                if (err) return;
+                const count = results[0] ? (results[0].count || results[0]['COUNT(*)'] || 0) : 0;
+                if (count === 0) {
+                    const insertDummySql = `
+                        INSERT INTO artikel (judul, konten) VALUES
+                        ('Pengenalan Pemrograman Web', 'Pemrograman Web adalah proses pembuatan aplikasi berbasis web yang diakses menggunakan internet. Bagian Frontend berfokus pada tampilan pengguna menggunakan HTML, CSS, dan JavaScript, sementara Backend berfokus pada logika server dan database.'),
+                        ('Belajar Async Javascript', 'Async JavaScript adalah teknik penulisan kode JavaScript di mana tugas dapat berjalan secara paralel tanpa menghalangi proses lain. Konsep utamanya meliputi Callback, Promises, dan Async/Await, yang sangat membantu dalam mengoptimalkan performa aplikasi.'),
+                        ('Membuat API dengan Express.js', 'Express.js adalah framework web minimalis dan fleksibel untuk Node.js. Dengan Express, kita bisa dengan mudah membuat REST API yang aman, cepat, dan terorganisir untuk dikonsumsi oleh aplikasi Frontend.');
+                    `;
+                    db.query(insertDummySql, [], (err) => {
+                        if (err) console.error("Gagal memasukkan data sampel SQLite:", err);
+                        else console.log("Data sampel SQLite berhasil dimasukkan.");
+                    });
                 }
-                console.log("Tabel 'artikel' terverifikasi.");
-
-                // Pastikan kolom gambar ada ketika migrasi ke schema baru
-                db.query("SHOW COLUMNS FROM artikel LIKE 'gambar'", (showErr, showResults) => {
-                    if (showErr) {
-                        console.error('Gagal memeriksa kolom gambar:', showErr);
-                        return;
-                    }
-                    if (!showResults || showResults.length === 0) {
-                        db.query("ALTER TABLE artikel ADD COLUMN gambar LONGTEXT DEFAULT NULL", (alterErr) => {
-                            if (alterErr) {
-                                console.error('Gagal menambahkan kolom gambar:', alterErr);
-                            } else {
-                                console.log('Kolom gambar berhasil ditambahkan ke tabel artikel.');
-                            }
-                        });
-                    }
-                });
-
-                // Pastikan kolom lat dan lon ada ketika migrasi ke schema baru
-                db.query("SHOW COLUMNS FROM artikel LIKE 'lat'", (showErr, showResults) => {
-                    if (showErr) {
-                        console.error('Gagal memeriksa kolom lat:', showErr);
-                        return;
-                    }
-                    if (!showResults || showResults.length === 0) {
-                        db.query("ALTER TABLE artikel ADD COLUMN lat VARCHAR(50) DEFAULT NULL, ADD COLUMN lon VARCHAR(50) DEFAULT NULL", (alterErr) => {
-                            if (alterErr) {
-                                console.error('Gagal menambahkan kolom lokasi (lat/lon):', alterErr);
-                            } else {
-                                console.log('Kolom lat dan lon berhasil ditambahkan ke tabel artikel.');
-                            }
-                        });
-                    }
-                });
-
-                // Cek apakah tabel kosong, jika iya masukkan data sampel
-                db.query("SELECT COUNT(*) AS count FROM artikel", (err, results) => {
-                    if (err) return;
-                    if (results[0] && results[0].count === 0) {
-                        const insertDummySql = `
-                            INSERT INTO artikel (judul, konten) VALUES
-                            ('Pengenalan Pemrograman Web', 'Pemrograman Web adalah proses pembuatan aplikasi berbasis web yang diakses menggunakan internet. Bagian Frontend berfokus pada tampilan pengguna menggunakan HTML, CSS, dan JavaScript, sementara Backend berfokus pada logika server dan database.'),
-                            ('Belajar Async Javascript', 'Async JavaScript adalah teknik penulisan kode JavaScript di mana tugas dapat berjalan secara paralel tanpa menghalangi proses lain. Konsep utamanya meliputi Callback, Promises, dan Async/Await, yang sangat membantu dalam mengoptimalkan performa aplikasi.'),
-                            ('Membuat API dengan Express.js', 'Express.js adalah framework web minimalis dan fleksibel untuk Node.js. Dengan Express, kita bisa dengan mudah membuat REST API yang aman, cepat, dan terorganisir untuk dikonsumsi oleh aplikasi Frontend.');
-                        `;
-                        db.query(insertDummySql, (err) => {
-                            if (err) console.error("Gagal memasukkan data sampel:", err);
-                            else console.log("Data sampel artikel berhasil dimasukkan.");
-                        });
-                    }
-                });
             });
-        };
+        });
+    };
+    setupSQLite();
 
-        if (connectionConfig.database) {
-            setupTables();
-        } else {
-            // Buat database otomatis jika belum ada (hanya untuk localhost)
-            db.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``, (err) => {
-                if (err) {
-                    console.error("Gagal membuat database:", err);
-                    return;
-                }
-                console.log(`Database '${dbName}' terverifikasi.`);
+} else {
+    // Jalankan MySQL jika terkonfigurasi
+    function handleDisconnect() {
+        db = mysql.createConnection(connectionConfig);
 
-                // Gunakan database tersebut
-                db.query(`USE \`${dbName}\``, (err) => {
+        db.connect((err) => {
+            if (err) {
+                console.error('Koneksi MySQL gagal: ' + err.stack);
+                setTimeout(handleDisconnect, 2000); // Coba lagi dalam 2 detik
+                return;
+            }
+            console.log('Koneksi ke server MySQL berhasil!');
+
+            const setupTables = () => {
+                const createTableSql = `
+                    CREATE TABLE IF NOT EXISTS artikel (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        judul VARCHAR(255) NOT NULL,
+                        konten TEXT NOT NULL,
+                        gambar LONGTEXT DEFAULT NULL,
+                        lat VARCHAR(50) DEFAULT NULL,
+                        lon VARCHAR(50) DEFAULT NULL,
+                        tanggal TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                `;
+
+                db.query(createTableSql, (err) => {
                     if (err) {
-                        console.error("Gagal memilih database:", err);
+                        console.error("Gagal membuat tabel:", err);
                         return;
                     }
-                    setupTables();
+                    console.log("Tabel 'artikel' terverifikasi.");
+
+                    db.query("SHOW COLUMNS FROM artikel LIKE 'gambar'", (showErr, showResults) => {
+                        if (showErr) return;
+                        if (!showResults || showResults.length === 0) {
+                            db.query("ALTER TABLE artikel ADD COLUMN gambar LONGTEXT DEFAULT NULL", (alterErr) => {});
+                        }
+                    });
+
+                    db.query("SHOW COLUMNS FROM artikel LIKE 'lat'", (showErr, showResults) => {
+                        if (showErr) return;
+                        if (!showResults || showResults.length === 0) {
+                            db.query("ALTER TABLE artikel ADD COLUMN lat VARCHAR(50) DEFAULT NULL, ADD COLUMN lon VARCHAR(50) DEFAULT NULL", (alterErr) => {});
+                        }
+                    });
+
+                    db.query("SELECT COUNT(*) AS count FROM artikel", (err, results) => {
+                        if (err) return;
+                        if (results[0] && results[0].count === 0) {
+                            const insertDummySql = `
+                                INSERT INTO artikel (judul, konten) VALUES
+                                ('Pengenalan Pemrograman Web', 'Pemrograman Web adalah proses pembuatan aplikasi berbasis web yang diakses menggunakan internet. Bagian Frontend berfokus pada tampilan pengguna menggunakan HTML, CSS, dan JavaScript, sementara Backend berfokus pada logika server dan database.'),
+                                ('Belajar Async Javascript', 'Async JavaScript adalah teknik penulisan kode JavaScript di mana tugas dapat berjalan secara paralel tanpa menghalangi proses lain. Konsep utamanya meliputi Callback, Promises, dan Async/Await, yang sangat membantu dalam mengoptimalkan performa aplikasi.'),
+                                ('Membuat API dengan Express.js', 'Express.js adalah framework web minimalis dan fleksibel untuk Node.js. Dengan Express, kita bisa dengan mudah membuat REST API yang aman, cepat, dan terorganisir untuk dikonsumsi oleh aplikasi Frontend.');
+                            `;
+                            db.query(insertDummySql, (err) => {});
+                        }
+                    });
                 });
-            });
-        }
-    });
+            };
 
-    db.on('error', (err) => {
-        console.error('Database connection error:', err);
-        if (err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ECONNRESET') {
-            console.log('Database connection lost. Reconnecting...');
-            handleDisconnect();
-        } else {
-            console.warn('Non-fatal database connection error:', err.message);
-        }
-    });
+            if (connectionConfig.database) {
+                setupTables();
+            } else {
+                db.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``, (err) => {
+                    if (err) return;
+                    db.query(`USE \`${dbName}\``, (err) => {
+                        if (err) return;
+                        setupTables();
+                    });
+                });
+            }
+        });
+
+        db.on('error', (err) => {
+            console.error('Database connection error:', err);
+            if (err.code === 'PROTOCOL_CONNECTION_LOST' || err.code === 'ECONNRESET') {
+                handleDisconnect();
+            }
+        });
+    }
+
+    handleDisconnect();
 }
-
-handleDisconnect();
 
 // 2. DASHBOARD STATS: Mengambil statistik artikel (Total artikel dan judul artikel terbaru)
 // Catatan: Route ini harus didaftarkan SEBELUM route dinamis lainnya agar tidak terganggu
