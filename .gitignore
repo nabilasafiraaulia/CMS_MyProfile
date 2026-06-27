@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.env
+.gemini/
+*.log
+.agents/
+.system_generated/
+/frontend-react/node_modules/
+/frontend-react/dist/

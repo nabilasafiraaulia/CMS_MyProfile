@@ -1,0 +1,1 @@
+async function e(e={}){if(!navigator.geolocation)return console.warn(`Geolocation tidak didukung di browser ini`),null;let t={timeout:5e3,enableHighAccuracy:!0,...e};return new Promise(e=>{navigator.geolocation.getCurrentPosition(t=>{e({lat:t.coords.latitude,lng:t.coords.longitude})},t=>{console.warn(`Geolocation error:`,t),e(null)},t)})}export{e as getCurrentCoords};
