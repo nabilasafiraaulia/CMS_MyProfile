@@ -26,19 +26,70 @@ let db;
 const useSQLite = !process.env.DB_HOST && !process.env.MYSQLHOST;
 
 if (useSQLite) {
-    console.log('MySQL host tidak terkonfigurasi. Menggunakan database SQLite...');
-    const sqlite3 = require('sqlite3').verbose();
+    console.log('MySQL host tidak terkonfigurasi. Menggunakan database berkas JSON lokal...');
     const fs = require('fs');
     const path = require('path');
     
-    const dataDir = path.resolve(__dirname, './data');
-    if (!fs.existsSync(dataDir)) {
-        fs.mkdirSync(dataDir, { recursive: true });
-    }
     const isVercel = !!process.env.VERCEL;
-    const dbPath = isVercel ? '/tmp/database.sqlite' : path.join(dataDir, 'database.sqlite');
-    console.log(`Menghubungkan SQLite ke path: ${dbPath}`);
-    const sqliteDb = new sqlite3.Database(dbPath);
+    const jsonFilePath = isVercel ? '/tmp/database.json' : path.resolve(__dirname, './data/database.json');
+    console.log(`Menggunakan JSON DB pada path: ${jsonFilePath}`);
+
+    // Ensure directory exists for local
+    if (!isVercel) {
+        const dataDir = path.resolve(__dirname, './data');
+        if (!fs.existsSync(dataDir)) {
+            fs.mkdirSync(dataDir, { recursive: true });
+        }
+    }
+
+    // Helper to read database
+    const readJsonDb = () => {
+        if (!fs.existsSync(jsonFilePath)) {
+            // Initial dummy data
+            const initialData = [
+                {
+                    id: 1,
+                    judul: 'Pengenalan Pemrograman Web',
+                    konten: 'Pemrograman Web adalah proses pembuatan aplikasi berbasis web yang diakses menggunakan internet. Bagian Frontend berfokus pada tampilan pengguna menggunakan HTML, CSS, dan JavaScript, sementara Backend berfokus pada logika server dan database.',
+                    gambar: null,
+                    lat: null,
+                    lon: null,
+                    tanggal: new Date().toISOString()
+                },
+                {
+                    id: 2,
+                    judul: 'Belajar Async Javascript',
+                    konten: 'Async JavaScript adalah teknik penulisan kode JavaScript di mana tugas dapat berjalan secara paralel tanpa menghalangi proses lain. Konsep utamanya meliputi Callback, Promises, dan Async/Await, yang sangat membantu dalam mengoptimalkan performa aplikasi.',
+                    gambar: null,
+                    lat: null,
+                    lon: null,
+                    tanggal: new Date().toISOString()
+                },
+                {
+                    id: 3,
+                    judul: 'Membuat API dengan Express.js',
+                    konten: 'Express.js adalah framework web minimalis dan fleksibel untuk Node.js. Dengan Express, kita bisa dengan mudah membuat REST API yang aman, cepat, dan terorganisir untuk dikonsumsi oleh aplikasi Frontend.',
+                    gambar: null,
+                    lat: null,
+                    lon: null,
+                    tanggal: new Date().toISOString()
+                }
+            ];
+            fs.writeFileSync(jsonFilePath, JSON.stringify(initialData, null, 2), 'utf8');
+            return initialData;
+        }
+        try {
+            const content = fs.readFileSync(jsonFilePath, 'utf8');
+            return JSON.parse(content);
+        } catch (e) {
+            return [];
+        }
+    };
+
+    // Helper to write database
+    const writeJsonDb = (data) => {
+        fs.writeFileSync(jsonFilePath, JSON.stringify(data, null, 2), 'utf8');
+    };
 
     db = {
         query: (sql, params, callback) => {
@@ -47,80 +98,104 @@ if (useSQLite) {
                 params = [];
             }
 
-            // Bersihkan SQL dari sintaks spesifik MySQL agar cocok dengan SQLite
-            let cleanSql = sql.replace(/ENGINE=InnoDB DEFAULT CHARSET=utf8mb4/gi, '')
-                              .replace(/TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP/gi, 'DATETIME DEFAULT CURRENT_TIMESTAMP')
-                              .replace(/INT AUTO_INCREMENT PRIMARY KEY/gi, 'INTEGER PRIMARY KEY AUTOINCREMENT')
-                              .replace(/LONGTEXT/gi, 'TEXT')
-                              .replace(/VARCHAR\(\d+\)/gi, 'TEXT');
+            const sqlTrim = sql.trim().toLowerCase();
+            let data = readJsonDb();
 
-            const isSelect = cleanSql.trim().toLowerCase().startsWith('select') || 
-                             cleanSql.trim().toLowerCase().startsWith('show') || 
-                             cleanSql.trim().toLowerCase().startsWith('desc') ||
-                             cleanSql.trim().toLowerCase().startsWith('explain');
-
-            if (isSelect) {
-                sqliteDb.all(cleanSql, params, (err, rows) => {
-                    if (err) callback(err);
-                    else callback(null, rows);
-                });
-            } else {
-                sqliteDb.run(cleanSql, params, function(err) {
-                    if (err) callback(err);
-                    else {
-                        callback(null, {
-                            affectedRows: this.changes,
-                            insertId: this.lastID,
-                            changes: this.changes
-                        });
+            try {
+                // 1. SELECT COUNT
+                if (sqlTrim.startsWith('select count')) {
+                    if (sqlTrim.includes('like') && params.length >= 2) {
+                        const searchVal = params[0].replace(/%/g, '').toLowerCase();
+                        const filtered = data.filter(item => 
+                            item.judul.toLowerCase().includes(searchVal) || 
+                            item.konten.toLowerCase().includes(searchVal)
+                        );
+                        return callback(null, [{ count: filtered.length }]);
                     }
-                });
+                    return callback(null, [{ count: data.length }]);
+                }
+
+                // 2. SELECT ALL or SELECT BY SEARCH
+                if (sqlTrim.startsWith('select * from artikel')) {
+                    let result = [...data];
+                    
+                    // Specific ID search: WHERE id = ?
+                    if (sqlTrim.includes('where id =') || sqlTrim.includes('where id=?')) {
+                        const idToFind = parseInt(params[0]);
+                        const item = result.find(x => x.id === idToFind);
+                        return callback(null, item ? [item] : []);
+                    }
+
+                    // Text search: WHERE judul LIKE ? OR konten LIKE ?
+                    if (sqlTrim.includes('like') && params.length >= 2) {
+                        const searchVal = params[0].replace(/%/g, '').toLowerCase();
+                        result = result.filter(item => 
+                            item.judul.toLowerCase().includes(searchVal) || 
+                            item.konten.toLowerCase().includes(searchVal)
+                        );
+                    }
+
+                    // Sort by latest first
+                    result.sort((a, b) => new Date(b.tanggal) - new Date(a.tanggal));
+                    return callback(null, result);
+                }
+
+                // 3. INSERT INTO
+                if (sqlTrim.startsWith('insert into')) {
+                    const nextId = data.length > 0 ? Math.max(...data.map(x => x.id)) + 1 : 1;
+                    const newItem = {
+                        id: nextId,
+                        judul: params[0],
+                        konten: params[1],
+                        gambar: params[2] || null,
+                        lat: params[3] || null,
+                        lon: params[4] || null,
+                        tanggal: new Date().toISOString()
+                    };
+                    data.push(newItem);
+                    writeJsonDb(data);
+                    return callback(null, { affectedRows: 1, insertId: nextId });
+                }
+
+                // 4. UPDATE
+                if (sqlTrim.startsWith('update')) {
+                    const idToUpdate = parseInt(params[params.length - 1]);
+                    const index = data.findIndex(x => x.id === idToUpdate);
+                    if (index !== -1) {
+                        data[index].judul = params[0];
+                        data[index].konten = params[1];
+                        data[index].gambar = params[2];
+                        data[index].lat = params[3];
+                        data[index].lon = params[4];
+                        data[index].tanggal = new Date().toISOString();
+                        writeJsonDb(data);
+                        return callback(null, { affectedRows: 1 });
+                    }
+                    return callback(new Error('Article not found to update'));
+                }
+
+                // 5. DELETE
+                if (sqlTrim.startsWith('delete from')) {
+                    const idToDelete = parseInt(params[0]);
+                    const originalLength = data.length;
+                    data = data.filter(x => x.id !== idToDelete);
+                    if (data.length < originalLength) {
+                        writeJsonDb(data);
+                        return callback(null, { affectedRows: 1 });
+                    }
+                    return callback(null, { affectedRows: 0 });
+                }
+
+                // 6. DUMMY SUCCESS FOR SCHEMA MIGRATIONS (SHOW COLUMNS, CREATE TABLE)
+                return callback(null, []);
+
+            } catch (err) {
+                return callback(err);
             }
         },
         on: (event, handler) => {}
     };
-
-    // Setup SQLite Tables
-    const setupSQLite = () => {
-        const createTableSql = `
-            CREATE TABLE IF NOT EXISTS artikel (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                judul TEXT NOT NULL,
-                konten TEXT NOT NULL,
-                gambar TEXT DEFAULT NULL,
-                lat TEXT DEFAULT NULL,
-                lon TEXT DEFAULT NULL,
-                tanggal DATETIME DEFAULT CURRENT_TIMESTAMP
-            );
-        `;
-        db.query(createTableSql, [], (err) => {
-            if (err) {
-                console.error("Gagal membuat tabel SQLite:", err);
-                return;
-            }
-            console.log("Tabel SQLite 'artikel' terverifikasi.");
-
-            // Dummy data check
-            db.query("SELECT COUNT(*) AS count FROM artikel", [], (err, results) => {
-                if (err) return;
-                const count = results[0] ? (results[0].count || results[0]['COUNT(*)'] || 0) : 0;
-                if (count === 0) {
-                    const insertDummySql = `
-                        INSERT INTO artikel (judul, konten) VALUES
-                        ('Pengenalan Pemrograman Web', 'Pemrograman Web adalah proses pembuatan aplikasi berbasis web yang diakses menggunakan internet. Bagian Frontend berfokus pada tampilan pengguna menggunakan HTML, CSS, dan JavaScript, sementara Backend berfokus pada logika server dan database.'),
-                        ('Belajar Async Javascript', 'Async JavaScript adalah teknik penulisan kode JavaScript di mana tugas dapat berjalan secara paralel tanpa menghalangi proses lain. Konsep utamanya meliputi Callback, Promises, dan Async/Await, yang sangat membantu dalam mengoptimalkan performa aplikasi.'),
-                        ('Membuat API dengan Express.js', 'Express.js adalah framework web minimalis dan fleksibel untuk Node.js. Dengan Express, kita bisa dengan mudah membuat REST API yang aman, cepat, dan terorganisir untuk dikonsumsi oleh aplikasi Frontend.');
-                    `;
-                    db.query(insertDummySql, [], (err) => {
-                        if (err) console.error("Gagal memasukkan data sampel SQLite:", err);
-                        else console.log("Data sampel SQLite berhasil dimasukkan.");
-                    });
-                }
-            });
-        });
-    };
-    setupSQLite();
-
+    console.log("Database berkas JSON terverifikasi dan siap.");
 } else {
     // Jalankan MySQL jika terkonfigurasi
     function handleDisconnect() {
