@@ -35,7 +35,10 @@ if (useSQLite) {
     if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
     }
-    const sqliteDb = new sqlite3.Database(path.join(dataDir, 'database.sqlite'));
+    const isVercel = !!process.env.VERCEL;
+    const dbPath = isVercel ? '/tmp/database.sqlite' : path.join(dataDir, 'database.sqlite');
+    console.log(`Menghubungkan SQLite ke path: ${dbPath}`);
+    const sqliteDb = new sqlite3.Database(dbPath);
 
     db = {
         query: (sql, params, callback) => {
